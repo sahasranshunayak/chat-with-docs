@@ -163,8 +163,8 @@ st.markdown(f"""
 
 GROQ_MODEL = "openai/gpt-oss-20b"   # free-tier Groq model, good quality and very fast
 CHUNK_SIZE = 1000        # characters per chunk when splitting documents
-CHUNK_OVERLAP = 150      # overlap between chunks so context isn't cut mid-sentence
-TOP_K = 4                # how many relevant chunks to retrieve per question
+CHUNK_OVERLAP = 200      # overlap between chunks so context isn't cut mid-sentence
+TOP_K = 6                # how many relevant chunks to retrieve per question (was 4 — too few for longer docs)
 
 # ---------------------------------------------------------------------------
 # HELPERS
@@ -202,12 +202,22 @@ def chunk_text(text: str, chunk_size: int = CHUNK_SIZE, overlap: int = CHUNK_OVE
 
 
 @st.cache_resource(show_spinner=False)
+def get_chroma_client():
+    """
+    The underlying Chroma client is safe to share across users (it's just a
+    connection), but each user session must get its OWN collection so that
+    different visitors' documents never mix together. That mixing was the bug
+    causing "I don't have enough information" answers during testing.
+    """
+    return chromadb.Client()
+
+
 def get_chroma_collection():
     """
-    A fresh, in-memory Chroma collection per app session.
-    Uses Chroma's built-in free local embedding model (no API key needed for embeddings).
+    Creates a brand-new, isolated collection for THIS browser session only.
+    Not cached with @st.cache_resource on purpose — that was the bug.
     """
-    client = chromadb.Client()
+    client = get_chroma_client()
     embed_fn = embedding_functions.DefaultEmbeddingFunction()
     collection_name = f"docs_{uuid.uuid4().hex[:8]}"
     collection = client.create_collection(name=collection_name, embedding_function=embed_fn)
@@ -231,9 +241,11 @@ def retrieve_context(collection, question: str, top_k: int = TOP_K):
 def ask_llm(client: Groq, question: str, context_chunks: list) -> str:
     context = "\n\n---\n\n".join(context_chunks)
     system_prompt = (
-        "You are a helpful assistant that answers questions using ONLY the "
-        "provided document context. If the answer is not in the context, "
-        "say you don't have enough information — never make things up."
+        "You are a helpful assistant that answers questions using the provided "
+        "document context. Use your best judgment to answer using whatever "
+        "relevant information IS present, even if it's not a complete answer. "
+        "Only say you don't have enough information if the context is truly "
+        "unrelated to the question — never fabricate facts that aren't in the context."
     )
     user_prompt = f"Context from the document:\n{context}\n\nQuestion: {question}\n\nAnswer clearly and concisely."
 
@@ -261,8 +273,8 @@ with st.sidebar:
     api_key = st.text_input(
         "Groq API Key",
         type="password",
-        help="Get a free key at https://console.groq.com/keys",
     )
+    st.markdown("[Get a free Groq API key →](https://console.groq.com/keys)")
     st.markdown("---")
     st.markdown(
         "**How this works:**\n"
