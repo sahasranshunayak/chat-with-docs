@@ -2,7 +2,7 @@
 
 An AI-powered app that lets you upload a **PDF or CSV** and ask questions about it in plain English. Built using **Retrieval-Augmented Generation (RAG)** — the same core technique behind tools like ChatGPT's "upload a file" feature.
 
-**Live demo:** _add your deployed Streamlit Cloud link here once deployed_
+**Live demo:** https://chat-with-docs-cacqmepjpu7qxkjdxxlszu.streamlit.app/
 
 ## How it works
 
