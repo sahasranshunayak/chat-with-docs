@@ -1,5 +1,10 @@
+
 streamlit
 groq
 chromadb
 pypdf
 pandas
+python-pptx
+pytesseract
+PyMuPDF
+Pillow

@@ -1,6 +1,6 @@
 """
-Chat With Your Documents — an AI app that lets a user upload a PDF or CSV
-and ask questions about it in plain English.
+Chat With Your Documents — an AI app that lets a user upload a PDF, CSV,
+PPTX, or image and ask questions about it in plain English.
 
 Tech stack (all free-tier friendly):
 - Streamlit          -> web UI
@@ -8,6 +8,8 @@ Tech stack (all free-tier friendly):
 - ChromaDB           -> local vector database (no cost, runs on your machine)
 - pypdf              -> PDF text extraction
 - pandas             -> CSV handling
+- python-pptx        -> PowerPoint text extraction
+- PyMuPDF + pytesseract -> OCR fallback for scanned PDFs and image uploads
 
 Author: (your name here) — built as a portfolio + freelance demo project.
 """
@@ -15,10 +17,15 @@ Author: (your name here) — built as a portfolio + freelance demo project.
 import os
 import uuid
 import tempfile
+from io import BytesIO
 
 import streamlit as st
 import pandas as pd
 from pypdf import PdfReader
+from pptx import Presentation
+import fitz  # PyMuPDF — used to rasterize PDF pages for OCR
+import pytesseract
+from PIL import Image
 import chromadb
 from chromadb.utils import embedding_functions
 from groq import Groq
@@ -27,6 +34,9 @@ from groq import Groq
 # CONFIG
 # ---------------------------------------------------------------------------
 st.set_page_config(page_title="Chat With Your Documents", page_icon="📄", layout="wide")
+
+# If Tesseract isn't on your system PATH (common on Windows), uncomment and set this:
+pytesseract.pytesseract.tesseract_cmd = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
 
 # ---------------------------------------------------------------------------
 # CUSTOM STYLING — glassmorphic dark dashboard look, inspired by enterprise
@@ -180,7 +190,46 @@ def extract_text_from_pdf(file) -> str:
     for page in reader.pages:
         page_text = page.extract_text() or ""
         text += page_text + "\n"
+
+    # If normal extraction found almost nothing, this is probably a scanned
+    # PDF (pages are images, not real text) — fall back to OCR.
+    if len(text.strip()) < 20:
+        file.seek(0)
+        text = ocr_pdf(file)
+
     return text
+
+
+def ocr_pdf(file) -> str:
+    """Rasterizes each PDF page to an image and runs OCR on it (for scanned PDFs)."""
+    text = ""
+    pdf_bytes = file.read()
+    doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+    for page in doc:
+        pix = page.get_pixmap(dpi=200)
+        img = Image.open(BytesIO(pix.tobytes("png")))
+        text += pytesseract.image_to_string(img) + "\n"
+    return text
+
+
+def extract_text_from_pptx(file) -> str:
+    prs = Presentation(file)
+    text = ""
+    for i, slide in enumerate(prs.slides, start=1):
+        text += f"\n--- Slide {i} ---\n"
+        for shape in slide.shapes:
+            if shape.has_text_frame:
+                for paragraph in shape.text_frame.paragraphs:
+                    for run in paragraph.runs:
+                        text += run.text + " "
+                text += "\n"
+    return text
+
+
+def extract_text_from_image(file) -> str:
+    """OCR for a directly-uploaded image (photo of a document, screenshot, etc.)."""
+    img = Image.open(file)
+    return pytesseract.image_to_string(img)
 
 
 def extract_text_from_csv(file) -> str:
@@ -226,6 +275,14 @@ def get_chroma_collection():
 
 def index_document(collection, text: str, source_name: str):
     chunks = chunk_text(text)
+    if not chunks:
+        # Happens with scanned/image-only PDFs, or files with no real text content.
+        # Raise a clear, friendly error instead of letting Chroma crash on an empty list.
+        raise ValueError(
+            f"Couldn't find any readable text in '{source_name}'. "
+            "This usually means it's a scanned image PDF rather than a text PDF. "
+            "Try a different file, or a PDF where you can normally select/copy the text."
+        )
     ids = [f"{source_name}_{i}" for i in range(len(chunks))]
     metadatas = [{"source": source_name, "chunk": i} for i in range(len(chunks))]
     collection.add(documents=chunks, ids=ids, metadatas=metadatas)
@@ -266,7 +323,7 @@ def ask_llm(client: Groq, question: str, context_chunks: list) -> str:
 # ---------------------------------------------------------------------------
 
 st.title("📄 Chat With Your Documents")
-st.caption("Upload a PDF or CSV, then ask questions about it in plain English — powered by AI.")
+st.caption("Upload a PDF, CSV, PowerPoint, or image, then ask questions about it in plain English — powered by AI.")
 
 with st.sidebar:
     st.header("Setup")
@@ -293,24 +350,35 @@ if "messages" not in st.session_state:
 if "indexed_files" not in st.session_state:
     st.session_state.indexed_files = []
 
-uploaded_file = st.file_uploader("Upload a PDF or CSV file", type=["pdf", "csv"])
+uploaded_file = st.file_uploader(
+    "Upload a PDF, CSV, PPTX, or image file",
+    type=["pdf", "csv", "pptx", "png", "jpg", "jpeg"],
+)
 
 if uploaded_file is not None and uploaded_file.name not in st.session_state.indexed_files:
     if not api_key:
         st.warning("Please enter your Groq API key in the sidebar first.")
     else:
         with st.spinner(f"Reading and indexing {uploaded_file.name}..."):
-            if uploaded_file.name.lower().endswith(".pdf"):
-                text = extract_text_from_pdf(uploaded_file)
+            name_lower = uploaded_file.name.lower()
+            if name_lower.endswith(".pdf"):
+                text = extract_text_from_pdf(uploaded_file)          # auto-falls back to OCR if scanned
+            elif name_lower.endswith(".pptx"):
+                text = extract_text_from_pptx(uploaded_file)
+            elif name_lower.endswith((".png", ".jpg", ".jpeg")):
+                text = extract_text_from_image(uploaded_file)        # OCR
             else:
                 text = extract_text_from_csv(uploaded_file)
 
             if st.session_state.collection is None:
                 st.session_state.collection = get_chroma_collection()
 
-            num_chunks = index_document(st.session_state.collection, text, uploaded_file.name)
-            st.session_state.indexed_files.append(uploaded_file.name)
-            st.success(f"Indexed {uploaded_file.name} into {num_chunks} chunks. Ask away!")
+            try:
+                num_chunks = index_document(st.session_state.collection, text, uploaded_file.name)
+                st.session_state.indexed_files.append(uploaded_file.name)
+                st.success(f"Indexed {uploaded_file.name} into {num_chunks} chunks. Ask away!")
+            except ValueError as e:
+                st.error(str(e))
 
 if st.session_state.indexed_files:
     st.info(f"📚 Loaded documents: {', '.join(st.session_state.indexed_files)}")

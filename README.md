@@ -2,8 +2,7 @@
 
 I built this to let you upload a PDF or CSV and just ask it questions instead of reading through the whole thing. You paste your own free Groq API key, upload a file, and start asking.
 
-Live demo: https://chat-with-docs-cacqmepjpu7qxkjdxxlszu.streamlit.app
-
+Live demo:  tesseract_cmd
 ## How it works
 
 The document gets split into small chunks of text. Each chunk gets turned into a vector and stored in a local database (Chroma). When you ask something, it finds the chunks that actually relate to your question and sends just those to the AI model, instead of dumping the whole document in. That's basically what "RAG" (Retrieval-Augmented Generation) means, it's the same idea used in tools like ChatGPT's file upload feature.
